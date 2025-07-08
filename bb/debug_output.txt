@@ -1,0 +1,8 @@
+Raw Response: ```json{"complete_room_list":["entrance_hall1","living_room1","bedroom1","bathroom1","kitchen1","attic1","basement1","storage_closet1","study1","dining_nook1","seance_room1"],"modified_room_list":["entrance","living_room","bedroom","bathroom","kitchen","unknown","storage","storage","study_room","dining_room","unknown"],"connection":[["entrance_hall1","living_room1"],["entrance_hall1","storage_closet1"],["living_room1","bedroom1"],["living_room1","kitchen1"],["living_room1","dining_nook1"],["bedroom1","bathroom1"],["bedroom1","attic1"],["kitchen1","basement1"],["study1","living_room1"],["seance_room1","attic1"]],"front_door":["entrance_hall1"]}``` Processed Response: ```json
+{
+"complete_room_list":["entrance_hall1","living_room1","bedroom1","bathroom1","kitchen1","attic1","basement1","storage_closet1","study1","dining_nook1","seance_room1"],
+"modified_room_list":["entrance","living_room","bedroom","bathroom","kitchen","unknown","storage","storage","study_room","dining_room","unknown"],
+"connection":[["entrance_hall1","living_room1"],["entrance_hall1","storage_closet1"],["living_room1","bedroom1"],["living_room1","kitchen1"],["living_room1","dining_nook1"],["bedroom1","bathroom1"],["bedroom1","attic1"],["kitchen1","basement1"],["study1","living_room1"],["seance_room1","attic1"]],
+"front_door":["entrance_hall1"]
+}
+```

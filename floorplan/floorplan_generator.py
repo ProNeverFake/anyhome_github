@@ -21,37 +21,78 @@ class FloorplanGenerator:
         self.houseganpp_weight = houseganpp_weight
 
     def generate_house_mesh(self, edit=False):
+        """  
+        Generate a complete 3D house mesh from the text description.  
+        
+        This method orchestrates the entire floorplan generation pipeline, converting  
+        a natural language description into a structured 3D house representation with  
+        walls, floors, and room boundaries.  
+        
+        Args:  
+            edit (bool, optional): If True, enables interactive language-guided editing  
+                mode where users can iteratively refine the floorplan through natural  
+                language descriptions. Defaults to False.  
+        
+        Returns:  
+            tuple: A 6-tuple containing:  
+                - house_v (list): 3D mesh vertices representing walls and floors  
+                - house_f (list): Face indices for the 3D mesh triangulation  
+                - border_map_no_doors (numpy.ndarray): 2D integer map of the floorplan  
+                where -2=walls, -10=outside, positive integers=room indices  
+                - room_name_dict (dict): Mapping from original room names to standardized  
+                room types used internally  
+                - boxes (dict): Bounding box coordinates for each room, used for furniture  
+                placement  
+                - centers (dict): Center point coordinates for each room  
+        
+        Process:  
+            1. Generates bubble diagram from text description using GPT-4  
+            2. Creates floorplan layout masks using HouseGAN++  
+            3. Post-processes masks to ensure validity and coherence  
+            4. Extracts wall segments and generates 3D mesh geometry  
+            5. Optionally allows iterative editing through natural language  
+        
+        Raises:  
+            Exception: If GPT-4 API calls fail or HouseGAN++ model loading fails  
+            
+        Example:  
+            >>> generator = FloorplanGenerator("A 2-bedroom apartment with kitchen")  
+            >>> house_v, house_f, border_map, rooms, boxes, centers = generator.generate_house_mesh()  
+            >>> # For interactive editing:  
+            >>> house_data = generator.generate_house_mesh(edit=True)  
+        """
         print(colored("Generating house mesh...", "grey"))
         # Generate graph from descriptoin
-        nds, eds, room_name_dict, room_list, fp_str = self.generate_bubble_diagram(self.description)
+        nodes, edges, room_name_dict, room_list, floorplan_str = self.generate_bubble_diagram(self.description)
         # Generate floorplan
-        border_map_no_doors, boxes, centers = self.generate_floorplan(nds, eds, room_name_dict, room_list)
+        border_map_no_doors, boxes, centers = self.generate_floorplan(nodes, edges, room_name_dict, room_list)
         # Handle editing
         while edit:
             edit_description = input(colored("Enter the description of the changes you want to make to the floorplan (Enter q to stop editing): ", "green"))
             if edit_description == "q" or edit_description == "":
                 break
-            nds, eds, room_name_dict, room_list, fp_str = self.generate_bubble_diagram(self.description, is_edit=True, edit_description=edit_description, edit_fp=fp_str)
-            border_map_no_doors, boxes, centers = self.generate_floorplan(nds, eds, room_name_dict, room_list)
+            nodes, edges, room_name_dict, room_list, floorplan_str = self.generate_bubble_diagram(self.description, is_edit=True, edit_description=edit_description, edit_fp=floorplan_str)
+            border_map_no_doors, boxes, centers = self.generate_floorplan(nodes, edges, room_name_dict, room_list)
         # Generate house mesh
         segments = utils.find_segments(border_map_no_doors)
         house_v, house_f = utils.write_to_obj(segments, border_map_no_doors)
         print(colored("House Mesh Generated Successfully!", "magenta"))
 
         return house_v, house_f, border_map_no_doors, room_name_dict, boxes, centers
-    
-    def generate_floorplan(self, nds, eds, room_name_dict, room_list):
+
+    def generate_floorplan(self, nodes, edges, room_name_dict, room_list):
         # Control whether the generated map is valid
         status = False
         while not status:
-            # Generate masks for house layout
-            masks = self.generate_layout_masks(nds, eds)
+            # Generate masks for house layout 
+            # * here house++
+            masks = self.generate_layout_masks(nodes, edges)
             # Check whether the resulted floor plan is valid and generate a single integer map for the house layout
             img_size = 256
-            status, result_map, result_map_no_doors, result_masks = utils.check_post_processing(nds, eds, masks, list(range(len(room_name_dict), len(room_list))), img_size)
+            status, result_map, result_map_no_doors, result_masks = utils.check_post_processing(nodes, edges, masks, list(range(len(room_name_dict), len(room_list))), img_size)
 
         # Change the color map into a border map
-        border_map_no_doors, start_coors = utils.generate_border_map_no_doors(result_map_no_doors, result_masks, list(range(len(room_name_dict), len(room_list))), nds, eds)
+        border_map_no_doors, start_coors = utils.generate_border_map_no_doors(result_map_no_doors, result_masks, list(range(len(room_name_dict), len(room_list))), nodes, edges)
         # Define the custom colors
         custom_colors = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), *plt.cm.tab20b(np.linspace(0, 1, 19))]
         # Decompose each room into regular rectangles and obtain the centers
@@ -60,7 +101,7 @@ class FloorplanGenerator:
 
         return border_map_no_doors, boxes, centers
 
-    def generate_bubble_diagram(self, description, is_edit=False, edit_description=None, edit_fp=None):
+    def generate_floorplan_from_description(self, description, is_edit = False, edit_description=None, edit_fp=None):
         # Generate a graph from description using GPT-4
         context_msg = """
         Task: You are a talented Architectural Planner tasked with envisioning the floorplan for a house described as {}. Your need to generate four things as described below:
@@ -109,7 +150,7 @@ class FloorplanGenerator:
         }}
         """
 
-        client = openai.OpenAI()
+        client = openai.OpenAI(base_url="http://localhost:8001/v1", api_key="your_api_key_here")  # Replace with your OpenAI API key
         raw_response = client.chat.completions.create(
             model="gpt-4",
             messages=[
@@ -121,6 +162,96 @@ class FloorplanGenerator:
 
         response_str = raw_response.choices[0].message.content
         raw_response = response_str.replace("\n", "").replace(" ", "")
+        return [response_str, raw_response]
+
+    def generate_bubble_diagram(
+        self, description, is_edit=False, edit_description=None, edit_fp=None
+    ):
+        """Generate a bubble diagram representation of a house floorplan based on the given description.
+
+        Args:
+            description (str): Description of the house to generate the floorplan for.
+            is_edit (bool, optional): Whether this is an edit to an existing floorplan. Defaults to False.
+            edit_description (str, optional): Description of changes to make to the existing floorplan. Defaults to None.
+            edit_fp (str, optional): Existing floorplan data to modify. Defaults to None.
+
+        Returns:
+            tuple: A tuple containing the following:
+                - graph_nodes (torch.FloatTensor): Node features of the generated graph.
+                - graph_edges (torch.LongTensor): Edge indices of the generated graph.
+                - room_name_dict (dict): Mapping of room names to their standardized types.
+                - room_list (list): List of room types in the generated floorplan.
+                - response_str (str): The raw response string from the model.
+        """
+
+        # Generate a graph from description using GPT-4
+        context_msg = """
+        Task: You are a talented Architectural Planner tasked with envisioning the floorplan for a house described as {}. Your need to generate four things as described below:
+
+        Requirements:
+        1. Complete Room List: Compile a comprehensive list of all rooms within the house. The list should adhere as close as possible with the house description given. If a room type appears multiple times, append an index to differentiate them. Without exceeding the house description, aim for a diverse assortment of rooms, covering a wide range of functionalities. You can generate any room type for the complete room list. For example, if the house features two bedrooms and one dining room, list them as: "[bedroom1, bedroom2, dining room1]".
+        2. Modified Room List: Adapt the previously listed rooms into a standardized set of room types based on their functionality and the house's style. Use only the following room types: kitchen, storage, bathroom, study_room, balcony, living_room, bedroom, entrance, dining_room, and unknown. Transform unique rooms to the closest match from the predefined list, appending an index if necessary. If a room does not match any predefined type, label it as "unknown".
+        3. Room Connections: Map out the connectivity between rooms, detailing which rooms are directly accessible from each other. Present this information as a list of tuples, indicating room pairs that share a connection. For instance, if the dining room connects to both bedroom1 and bedroom2, but there is no direct connection between the two bedrooms, list the connections as: "[[dining_room1, bedroom1], [dining_room1, bedroom2]]". The room names should be from the complete room list that you've generated at requirement 1.
+        4. Front Door Locations: Identify the rooms that house the main entrances to the dwelling. Specify each room that contains a front door, considering it as the primary access point to the house.
+
+        Output: Provide the information in a valid JSON structure with no spaces. Don't include anything beside the requested data represented in the following format:
+        {{
+            "complete_room_list": [...],
+            ”modified_room_list": [...],
+            ”connection": [...],
+            ”front_door": [...]
+        }}
+        """
+
+        edit_context_msg = """
+        Context: You are a talented Architectural Planner serving a customer. You are given a floorplan for a house as represented by the data below. The data was generated as the four requirements below:
+
+        Requirements:
+        1. Complete Room List: Compile a comprehensive list of all rooms within the house. The list should adhere as close as possible with the house description given. If a room type appears multiple times, append an index to differentiate them. Without exceeding the house description, aim for a diverse assortment of rooms, covering a wide range of functionalities. You can generate any room type for the complete room list. For example, if the house features two bedrooms and one dining room, list them as: "[bedroom1, bedroom2, dining room1]".
+        2. Modified Room List: Adapt the previously listed rooms into a standardized set of room types based on their functionality and the house's style. Use only the following room types: kitchen, storage, bathroom, study_room, balcony, living_room, bedroom, entrance, dining_room, and unknown. Transform unique rooms to the closest match from the predefined list, appending an index if necessary. If a room does not match any predefined type, label it as "unknown".
+        3. Room Connections: Map out the connectivity between rooms, detailing which rooms are directly accessible from each other. Present this information as a list of tuples, indicating room pairs that share a connection. For instance, if the dining room connects to both bedroom1 and bedroom2, but there is no direct connection between the two bedrooms, list the connections as: "[[dining_room1, bedroom1], [dining_room1, bedroom2]]". The room names should be consistent with the names in the complete room list that you've generated.
+        4. Front Door Locations: Identify the rooms that house the main entrances to the dwelling. Specify each room that contains a front door, considering it as the primary access point to the house. The room name should be consistent with the names in the complete room list that you've generated.
+
+        The description of the House:
+        {}
+
+        Generated Data of the Floorplan of the House:
+        {}
+
+        Now, the customer wants to edit the floorplan. They have provided the following description of the changes they want to make:
+        {}
+
+        Task: Could you please update the floorplan based on the customer's request and provide the updated data strictly following the same requirements above?
+
+        Output: Provide the information in a valid JSON structure with no spaces. Don't include anything beside the requested data represented in the following format:
+        {{
+            "complete_room_list": [...],
+            ”modified_room_list": [...],
+            ”connection": [...],
+            ”front_door": [...]
+        }}
+        """
+
+        client = openai.OpenAI(base_url="http://localhost:8001/v1", api_key="your_api_key_here")  # Replace with your OpenAI API key
+        raw_response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "user", "content": context_msg.format(description) if not is_edit else edit_context_msg.format(description, edit_fp, edit_description)},
+            ],
+            temperature=0.7,
+            max_tokens=2048
+        )
+
+        response_str = raw_response.choices[0].message.content
+        raw_response = response_str.replace("\n", "").replace(" ", "")
+
+        # save the response str and the raw response in a file for debug
+        with open('debug_output.txt', 'w') as f:
+            f.write(f"Raw Response: {raw_response} ")
+            f.write(f"Processed Response: {response_str}")
+
+        # import ipdb; ipdb.set_trace()
+
         pattern = r'\{(?:[^{}]|(?R))*\}'  # regex to discard text paragraphs before or after the JSON object
         response = json.loads(regex.search(pattern, raw_response).group())
 
@@ -192,7 +323,7 @@ class FloorplanGenerator:
 
         return graph_nodes, graph_edges, room_name_dict, room_list, str(response)
 
-    def generate_layout_masks(self, nds, eds):
+    def generate_layout_masks(self, nodes, edges):
         # Create output dir
         os.makedirs(self.output_dir, exist_ok=True)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -207,9 +338,9 @@ class FloorplanGenerator:
             model.cuda()
 
         # Draw real graph
-        real_nodes = np.where(nds.detach().cpu()==1)[-1]
-        graph = [nds, eds]
-        true_graph_obj, graph_im = draw_graph([real_nodes, eds.detach().cpu().numpy()])
+        real_nodes = np.where(nodes.detach().cpu()==1)[-1]
+        graph = [nodes, edges]
+        true_graph_obj, graph_im = draw_graph([real_nodes, edges.detach().cpu().numpy()])
         graph_im.save('./{}/input_graph.png'.format(self.output_dir)) # save graph
 
         # Add room types incrementally
@@ -227,9 +358,9 @@ class FloorplanGenerator:
 
         # Generate per room type
         for _iter, _types in enumerate(selected_types):
-            _fixed_nds = np.concatenate([np.where(real_nodes == _t)[0] for _t in _types]) \
+            _fixed_nodes = np.concatenate([np.where(real_nodes == _t)[0] for _t in _types]) \
                 if len(_types) > 0 else np.array([])
-            state = {'masks': masks, 'fixed_nodes': _fixed_nds}
+            state = {'masks': masks, 'fixed_nodes': _fixed_nodes}
             masks = self._infer(graph, model, state)
 
         # Save final floorplans
@@ -238,14 +369,14 @@ class FloorplanGenerator:
         save_image(imk, './{}/final_fp.png'.format(self.output_dir), nrow=1, normalize=False)
 
         return masks
-    
+
     @staticmethod
     def _infer(graph, model, prev_state=None):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # configure input to the network
-        z, given_masks_in, given_nds, given_eds = _init_input(graph, prev_state)
+        z, given_masks_in, given_nodes, given_edges = _init_input(graph, prev_state)
         # run inference model
         with torch.no_grad():
-            masks = model(z.to(device), given_masks_in.to(device), given_nds.to(device), given_eds.to(device))
+            masks = model(z.to(device), given_masks_in.to(device), given_nodes.to(device), given_edges.to(device))
             masks = masks.detach().cpu().numpy()
         return masks

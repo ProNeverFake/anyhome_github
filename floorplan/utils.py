@@ -338,10 +338,22 @@ def visualize_map_with_centers(map_array, boxes, centers):
     plt.show()
 
 def find_segments(grid):
-    """Find the segments of the grid."""
+    """Find the segments of the grid.
+    
+    Actually, this function finds the segments of walls in the grid.
+    
+    Args:
+        grid (np.ndarray): The grid to find segments in. -2 represents walls, and other values represent spaces.
+        
+    Returns:
+        list: A list of segments, where each segment is represented as a tuple of start and end coordinates.
+    
+    """
     segments = []
 
-    # Find horizontal segments
+    # Find horizontal segments 
+    # just find the start and end of each wall segment in each row
+    # oooooooo(start)xxxxxxxxxxxx(end)ooooooooo
     for i in range(grid.shape[0]):
         start_col = None
         for j in range(grid.shape[1]):
@@ -367,6 +379,7 @@ def find_segments(grid):
 
 
 def generate_floor_mesh(grid, vertices, faces, vertex_count):
+    height = 0.05  # Height of the floor mesh
     """Generate the floor mesh from the grid."""
     # Convert the grid into binary: 1 for spaces without -10 and 0 otherwise
     binary_grid = np.where(grid != -10, 1, 0).astype('uint8')
@@ -381,21 +394,70 @@ def generate_floor_mesh(grid, vertices, faces, vertex_count):
         min_i, max_i = np.min(rows), np.max(rows)
         min_j, max_j = np.min(cols), np.max(cols)
         # Append the corners of the bounding box to the vertices list.
-        vertices.extend([[min_i, min_j, 0],
-                         [max_i, min_j, 0],
-                         [max_i, max_j, 0],
-                         [min_i, max_j, 0]])
+        # vertices.extend([[min_i, min_j, 0],
+        #                  [max_i, min_j, 0],
+        #                  [max_i, max_j, 0],
+        #                  [min_i, max_j, 0]])
+        vertices.extend([
+            # 底面（Z=0）
+            [min_i, min_j, 0], [max_i, min_j, 0], 
+            [max_i, max_j, 0], [min_i, max_j, 0],
+            # 顶面（Z=height）
+            [min_i, min_j, height], [max_i, min_j, height], 
+            [max_i, max_j, height], [min_i, max_j, height]
+        ])
         # Append the faces
-        faces.extend([[vertex_count, vertex_count+1, vertex_count+2],
-                      [vertex_count, vertex_count+2, vertex_count+3]])
+        # faces.extend([[vertex_count, vertex_count+1, vertex_count+2],
+        #               [vertex_count, vertex_count+2, vertex_count+3]])
+        faces.extend([
+            # 底面（三角形 1 和 2）
+            [vertex_count, vertex_count+1, vertex_count+2],
+            [vertex_count, vertex_count+2, vertex_count+3],
+            # 顶面（三角形 3 和 4）
+            [vertex_count+4, vertex_count+5, vertex_count+6],
+            [vertex_count+4, vertex_count+6, vertex_count+7],
+            # 前面（三角形 5 和 6）
+            [vertex_count, vertex_count+1, vertex_count+5],
+            [vertex_count, vertex_count+5, vertex_count+4],
+            # 后面（三角形 7 和 8）
+            [vertex_count+3, vertex_count+2, vertex_count+6],
+            [vertex_count+3, vertex_count+6, vertex_count+7],
+            # 左面（三角形 9 和 10）
+            [vertex_count, vertex_count+3, vertex_count+7],
+            [vertex_count, vertex_count+7, vertex_count+4],
+            # 右面（三角形 11 和 12）
+            [vertex_count+1, vertex_count+2, vertex_count+6],
+            [vertex_count+1, vertex_count+6, vertex_count+5]
+        ])
 
-        vertex_count += 4
+        vertex_count += 8 # 4
 
     return vertices, faces, vertex_count
 
 
 def write_to_obj(segments, grid, base_mesh_dir="output/base_mesh.obj"):
-    """Write the base structure to an obj file."""
+    """Convert wall segments and room grid into a 3D mesh in OBJ format.
+    
+    The process involves:
+    1. Processing each wall segment (from find_segments()):
+       - Vertical segments (same row, different columns) are extruded into 3D walls
+       - Horizontal segments (same column, different rows) are extruded into 3D walls
+       - Each segment becomes a 3D box with specified thickness and height
+    2. Generating floor meshes for each room area:
+       - Uses connected components to identify separate room spaces
+       - Creates rectangular floor planes for each room
+    3. Combining all geometry into a single OBJ file with:
+       - Vertex positions (v x y z)
+       - Face definitions (f v1 v2 v3)
+       
+    Args:
+        segments: List of wall segments from find_segments(), each as ((x1,y1),(x2,y2))
+        grid: 2D numpy array representing room layout (-2=walls, other=spaces)
+        base_mesh_dir: Output path for the OBJ file
+        
+    Returns:
+        tuple: (vertices list, faces list)
+    """
     wall_thickness = 0.05
     wall_height = 25
     vertices = []
